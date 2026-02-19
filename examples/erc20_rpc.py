@@ -7,27 +7,15 @@
 # You can run this script with:
 # RPC_URL=https://mainnet.gateway.tenderly.co uv run examples/erc20_rpc.py
 
-# After run, you can see the result in the database:
-# duckdb data/rpc_transfers.db
-# SELECT * FROM transfers LIMIT 3;
+# After run, the parquet files are written to data/transfers/
 
 import asyncio
-import logging
-import os
 from pathlib import Path
 
-import duckdb
 import pyarrow as pa
-from dotenv import load_dotenv
-
 from cherry_core import evm_signature_to_topic0, ingest
 from cherry_etl import config as cc
 from cherry_etl import run_pipeline
-
-load_dotenv()
-
-logging.basicConfig(level=os.environ.get("LOGLEVEL", "INFO").upper())
-logger = logging.getLogger(__name__)
 
 DATA_PATH = str(Path.cwd() / "data")
 Path(DATA_PATH).mkdir(parents=True, exist_ok=True)
@@ -39,19 +27,11 @@ TRANSFER_SIGNATURE = "Transfer(address indexed from, address indexed to, uint256
 
 
 async def main():
-    rpc_url = os.environ.get("RPC_URL", "http://localhost:8545")
-    logger.info(f"using RPC endpoint: {rpc_url}")
-    logger.info(f"ingesting blocks {FROM_BLOCK} to {TO_BLOCK}")
-
     provider = ingest.ProviderConfig(
         kind=ingest.ProviderKind.RPC,
-        url=rpc_url,
-        # stop once we reach the head of the requested range
+        url="https://mainnet.gateway.tenderly.co",
         stop_on_head=True,
-        rpc=ingest.RpcProviderConfig(
-            # keep each eth_getLogs call within typical provider limits
-            max_block_range=100,
-        ),
+        max_block_range=2000,
     )
 
     query = ingest.Query(
@@ -80,11 +60,9 @@ async def main():
         ),
     )
 
-    connection = duckdb.connect("data/rpc_transfers.db")
-
     writer = cc.Writer(
-        kind=cc.WriterKind.DUCKDB,
-        config=cc.DuckdbWriterConfig(connection=connection.cursor()),
+        kind=cc.WriterKind.PYARROW_DATASET,
+        config=cc.PyArrowDatasetWriterConfig(base_dir=DATA_PATH),
     )
 
     pipeline = cc.Pipeline(
@@ -117,13 +95,6 @@ async def main():
     )
 
     await run_pipeline(pipeline=pipeline)
-
-    result = connection.sql(
-        'SELECT block_number, transaction_hash, "from", "to", amount'
-        " FROM transfers ORDER BY block_number, log_index LIMIT 10"
-    )
-    logger.info(f"last 10 transfers:\n{result}")
-    connection.close()
 
 
 if __name__ == "__main__":
